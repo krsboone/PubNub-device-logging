@@ -1,5 +1,6 @@
 # PubNub-device-logging
 
+
 ## Details
 Captures and ships logs from device, then collects on centralized logging system
 
@@ -33,6 +34,7 @@ start_logging(os.path.basename(__file__))
 * Pulls and displays data from configurable log files, within the `central_logs/` directory
 * Assumes that log files are accessible from same web server - does not access directly through filesystem
 
+
 ## Config
 
 Replace
@@ -46,6 +48,11 @@ with your pub/sub keys
 Install PubNub Python SDK
 `pip install 'pubnub>=10.6.1'`
 https://www.pubnub.com/docs/sdks/python
+
+
+## Recording
+
+
 
 
 ## Todo
