@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PubNub | System Monitoring</title>
+    <script src="https://cdn.pubnub.com/sdk/javascript/pubnub.7.2.2.min.js"></script>
+    <style>
+        :root { --red: #ff4d4d; --green: #2ecc71; --gray: #bdc3c7; --dark: #2d3436; --black: #1e272e; --console-bg: #000000; --console-text: #00ff00; }
+        body { font-family: 'Inter', sans-serif; background: #f0f2f5; padding: 40px; color: var(--dark); }
+
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        #debug-status { font-size: 12px; background: #dfe6e9; padding: 5px 10px; border-radius: 4px; font-weight: bold; }
+
+        /* --- DEVICE GRID --- */
+        .device-grid {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px; align-items: start; margin-bottom: 50px;
+        }
+        .card {
+            background: white; padding: 25px; border-radius: 12px;
+            border-top: 8px solid var(--gray); cursor: pointer; transition: 0.3s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        .card.online { border-top-color: var(--green); }
+        .card.offline { border-top-color: var(--red); }
+        .status-label { font-size: 11px; font-weight: 900; letter-spacing: 1px; margin-bottom: 5px; }
+        .name { font-weight: 800; font-size: 1.4em; margin-bottom: 8px; }
+        .time-counter { font-size: 13px; color: #636e72; }
+        .offline-log { display: none; margin-top: 15px; padding-top: 12px; border-top: 1px solid #eee; font-size: 12px; }
+        .card.expanded .offline-log { display: block; }
+        .log-entry { margin-bottom: 4px; color: #e74c3c; }
+
+        /* --- LOG CONSOLE --- */
+        .console-container {
+            background: var(--black); border-radius: 8px; overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            border: 1px solid #333;
+        }
+        .console-header {
+            background: #2d3436; padding: 10px 20px;
+            display: flex; gap: 10px; overflow-x: auto;
+            border-bottom: 1px solid #444;
+        }
+        .tab-btn {
+            background: #444; border: none; color: #aaa; padding: 6px 15px;
+            border-radius: 4px; cursor: pointer; font-size: 12px; font-family: monospace;
+            transition: 0.2s;
+        }
+        .tab-btn:hover { background: #555; color: white; }
+        .tab-btn.active { background: #0984e3; color: white; font-weight: bold; }
+
+        .console-body {
+            height: 300px; overflow-y: auto; padding: 15px;
+            font-family: 'Consolas', 'Monaco', monospace; font-size: 13px;
+            color: #dcdcdc; line-height: 1.4;
+        }
+        .log-line { border-bottom: 1px solid #222; padding: 2px 0; display: flex; }
+        .log-ts { color: #555; margin-right: 10px; user-select: none; }
+        .log-msg { color: var(--console-text); white-space: pre-wrap; }
+
+        /* Auto-scroll anchor */
+        #anchor { height: 1px; }
+
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div>
+            <h1>System Monitoring</h1>
+            <p>Real-time Device Monitoring & Centralized Logs</p>
+        </div>
+        <div id="debug-status">System Initializing...</div>
+    </div>
+
+    <div class="device-grid" id="grid"></div>
+
+    <h3 style="margin-bottom:10px; color:#555;">Central Log Repository</h3>
+    <div class="console-container">
+        <div class="console-header" id="log-tabs">
+            </div>
+        <div class="console-body" id="console-display">
+            <div style="color:#666; padding:20px; text-align:center;">Waiting for log streams...</div>
+            <div id="anchor"></div>
+        </div>
+    </div>
+
+    <script>
+        // CONFIGURATION
+        const PUBNUB_KEYS = { publishKey: 'pub-key-here', subscribeKey: 'sub-key-here', userId: 'dashboard_viewer' };
+        const CHANNELS = { MONITOR: "availability_monitor", LOGS: "logging" };
+
+        const pubnub = new PubNub(PUBNUB_KEYS);
+
+        // DATA STORES
+        let deviceRegistry = {};
+        let logRegistry = {}; // { "filename": ["line1", "line2"] }
+        let activeTab = null;
+
+        // --- 1. AVAILABILITY MONITOR LOGIC (Previous Logic) ---
+        async function initAvailability() {
+            const debug = document.getElementById('debug-status');
+            try {
+                // Fetch Members
+                const response = await pubnub.objects.getChannelMembers({
+                    channel: CHANNELS.MONITOR, include: { includeUUIDDetails: true }
+                });
+                const members = response.data || [];
+
+                // Fetch History
+                const history = await pubnub.fetchMessages({ channels: [CHANNELS.MONITOR], count: 50 });
+                const msgs = history.channels[CHANNELS.MONITOR] || [];
+
+                members.forEach(m => {
+                    const id = m.uuid.id;
+                    const lastMsg = msgs.slice().reverse().find(msg => msg.message.id === id);
+                    deviceRegistry[id] = {
+                        id: id,
+                        lastSeen: lastMsg ? Math.floor(lastMsg.timetoken / 10000) : 0,
+                        isOffline: true,
+                        isExpanded: false,
+                        localLogs: [] // Incident logs specific to the card
+                    };
+                });
+                debug.innerText = `Nodes: ${members.length} | Console Ready`;
+                renderGrid();
+            } catch (e) { console.error("Init Error:", e); debug.innerText = "Connection Failed"; }
+        }
+
+        // --- 2. LOG CONSOLE LOGIC (New Feature) ---
+
+        function getLogTab(filename) {
+            // Normalize unknown sources
+            if (!filename) filename = "unknown.log";
+
+            // If tab doesn't exist, create it
+            if (!logRegistry[filename]) {
+                logRegistry[filename] = [];
+                createTabButton(filename);
+                // Attempt to fetch local history for this file
+                fetchLocalLogFile(filename);
+            }
+            return filename;
+        }
+
+        function createTabButton(filename) {
+            const tabs = document.getElementById('log-tabs');
+            const btn = document.createElement('button');
+            btn.className = 'tab-btn';
+            btn.innerText = filename;
+            btn.onclick = () => switchTab(filename);
+            tabs.appendChild(btn);
+
+            // If this is the first tab, activate it automatically
+            if (!activeTab) switchTab(filename);
+        }
+
+        function switchTab(filename) {
+            activeTab = filename;
+
+            // Update Buttons
+            document.querySelectorAll('.tab-btn').forEach(b => {
+                b.classList.toggle('active', b.innerText === filename);
+            });
+
+            renderConsole();
+        }
+
+        async function fetchLocalLogFile(filename) {
+            // Try to read the file from the local web server
+            try {
+                const res = await fetch(`/central_logs/${filename}`);
+                if (!res.ok) throw new Error("File not found");
+                const text = await res.text();
+                const lines = text.split('\n').filter(l => l.trim().length > 0);
+
+                // Prepend history (avoid duplicates if possible, but simple prepend is safer)
+                // Mark these as "DISK" source
+                const historyEntries = lines.map(l => ({
+                    ts: "DISK",
+                    msg: l
+                }));
+
+                // Combine: History + Live (Live is usually empty at init)
+                logRegistry[filename] = [...historyEntries, ...logRegistry[filename]];
+                if (activeTab === filename) renderConsole();
+
+            } catch (e) {
+                console.log(`Could not fetch local history for ${filename} (Normal if file is new)`);
+            }
+        }
+
+        function renderConsole() {
+            const display = document.getElementById('console-display');
+            if (!activeTab || !logRegistry[activeTab]) return;
+
+            const logs = logRegistry[activeTab];
+
+            // Generate HTML
+            if (logs.length === 0) {
+                display.innerHTML = '<div style="color:#666; padding:20px;">No logs recorded yet.</div>';
+                return;
+            }
+
+            display.innerHTML = logs.map(entry => `
+                <div class="log-line">
+                    <span class="log-ts">[${entry.ts}]</span>
+                    <span class="log-msg">${entry.msg}</span>
+                </div>
+            `).join('') + '<div id="anchor"></div>'; // Anchor keeps us scrolled to bottom
+
+            // Auto-scroll to bottom
+            const anchor = document.getElementById('anchor');
+            if(anchor) anchor.scrollIntoView();
+        }
+
+        // --- 3. MAIN EVENT LISTENER ---
+        pubnub.addListener({
+            message: (event) => {
+                // A. Availability Heartbeats
+                if (event.channel === CHANNELS.MONITOR) {
+                    const id = event.message.id;
+                    if (deviceRegistry[id]) {
+                        deviceRegistry[id].lastSeen = Date.now();
+                        renderGrid();
+                    }
+                }
+
+                // B. Central Logs (Live Stream)
+                if (event.channel === CHANNELS.LOGS) {
+                    const msg = event.message;
+                    const filename = getLogTab(msg.source);
+
+                    // Add new message to registry
+                    logRegistry[filename].push({
+                        ts: new Date().toLocaleTimeString(),
+                        msg: msg.log
+                    });
+
+                    // Only re-render if looking at this tab
+                    if (activeTab === filename) {
+                        renderConsole();
+                    }
+                }
+            }
+        });
+
+        pubnub.subscribe({ channels: [CHANNELS.MONITOR, CHANNELS.LOGS] });
+
+        // --- 4. RENDERERS ---
+        function renderGrid() {
+            const grid = document.getElementById('grid');
+            const now = Date.now();
+
+            Object.keys(deviceRegistry).forEach(id => {
+                let card = document.getElementById(`card-${id}`);
+                const data = deviceRegistry[id];
+                const isOnline = (now - data.lastSeen) < 7000;
+
+                if (!card) {
+                    card = document.createElement('div');
+                    card.id = `card-${id}`;
+                    card.onclick = () => {
+                        data.isExpanded = !data.isExpanded;
+                        renderGrid(); // Simple re-render to show/hide details
+                    };
+                    grid.appendChild(card);
+                }
+
+                card.className = `card ${isOnline ? 'online' : 'offline'} ${data.isExpanded ? 'expanded' : ''}`;
+                card.innerHTML = `
+                    <div class="status-label" style="color: ${isOnline ? 'var(--green)' : 'var(--red)'}">
+                        ${isOnline ? '● ACTIVE' : '○ DISCONNECTED'}
+                    </div>
+                    <div class="name">${id}</div>
+                    <div class="time-counter">${isOnline ? 'Pulse Nominal' : 'No Signal detected'}</div>
+                    <div class="offline-log">
+                        <strong>Log Source:</strong><br>
+                        See Console below for detailed logs.
+                    </div>
+                `;
+            });
+        }
+
+        initAvailability();
+
+        // Auto-Discovery: Check for common log files on load (Optional but helpful)
+        // Add filenames here that should ALWAYS appear
+        ["monitor.py.log", "message_cleanup.log"].forEach(f => getLogTab(f));
+
+        setInterval(renderGrid, 2000);
+
+    </script>
+</body>
+</html>
