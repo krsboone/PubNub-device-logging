@@ -61,9 +61,48 @@
         /* Auto-scroll anchor */
         #anchor { height: 1px; }
 
+        /* Username modal */
+        #username-modal {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 1000;
+        }
+        #username-modal .modal-box {
+            background: white; border-radius: 12px; padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+            width: 360px; text-align: center;
+        }
+        #username-modal h2 { margin: 0 0 8px; font-size: 1.4em; }
+        #username-modal p { margin: 0 0 24px; color: #636e72; font-size: 14px; }
+        #username-input {
+            width: 100%; box-sizing: border-box;
+            padding: 10px 14px; font-size: 15px;
+            border: 2px solid #dfe6e9; border-radius: 8px;
+            outline: none; margin-bottom: 16px;
+        }
+        #username-input:focus { border-color: var(--dark); }
+        #username-modal button {
+            width: 100%; padding: 11px;
+            background: var(--dark); color: white;
+            border: none; border-radius: 8px;
+            font-size: 15px; font-weight: 600; cursor: pointer;
+        }
+        #username-modal button:hover { background: #636e72; }
+
     </style>
 </head>
 <body>
+
+    <!-- Username prompt -->
+    <div id="username-modal">
+        <div class="modal-box">
+            <h2>Welcome</h2>
+            <p>Enter a username to continue</p>
+            <input type="text" id="username-input" placeholder="Your username..." />
+            <button onclick="startDashboard()">Continue</button>
+        </div>
+    </div>
 
     <div class="header">
         <div>
@@ -87,15 +126,76 @@
 
     <script>
         // CONFIGURATION
-        const PUBNUB_KEYS = { publishKey: 'pub-key-here', subscribeKey: 'sub-key-here', userId: 'dashboard_viewer' };
         const CHANNELS = { MONITOR: "availability_monitor", LOGS: "logging" };
 
-        const pubnub = new PubNub(PUBNUB_KEYS);
+        let pubnub;
 
         // DATA STORES
         let deviceRegistry = {};
         let logRegistry = {}; // { "filename": ["line1", "line2"] }
         let activeTab = null;
+
+        function startDashboard() {
+            const input = document.getElementById('username-input');
+            const username = input.value.trim();
+            if (!username) {
+                input.focus();
+                return;
+            }
+
+            document.getElementById('username-modal').style.display = 'none';
+
+            pubnub = new PubNub({
+                publishKey: 'pub-key-here',
+                subscribeKey: 'sub-key-here',
+                userId: 'availability_monitor_' + username
+            });
+
+            pubnub.addListener({
+                message: (event) => {
+                    // A. Availability Heartbeats
+                    if (event.channel === CHANNELS.MONITOR) {
+                        const id = event.message.id;
+                        if (deviceRegistry[id]) {
+                            deviceRegistry[id].lastSeen = Date.now();
+                            renderGrid();
+                        }
+                    }
+
+                    // B. Central Logs (Live Stream)
+                    if (event.channel === CHANNELS.LOGS) {
+                        const msg = event.message;
+                        const filename = getLogTab(msg.source);
+
+                        // Add new message to registry
+                        logRegistry[filename].push({
+                            ts: new Date().toLocaleTimeString(),
+                            msg: msg.log
+                        });
+
+                        // Only re-render if looking at this tab
+                        if (activeTab === filename) {
+                            renderConsole();
+                        }
+                    }
+                }
+            });
+
+            pubnub.subscribe({ channels: [CHANNELS.MONITOR, CHANNELS.LOGS] });
+
+            initAvailability();
+
+            // Auto-Discovery: Check for common log files on load (Optional but helpful)
+            // Add filenames here that should ALWAYS appear
+            ["monitor.py.log", "message_cleanup.log"].forEach(f => getLogTab(f));
+
+            setInterval(renderGrid, 2000);
+        }
+
+        // Allow pressing Enter in the input to submit
+        document.getElementById('username-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') startDashboard();
+        });
 
         // --- 1. AVAILABILITY MONITOR LOGIC (Previous Logic) ---
         async function initAvailability() {
@@ -214,39 +314,6 @@
             if(anchor) anchor.scrollIntoView();
         }
 
-        // --- 3. MAIN EVENT LISTENER ---
-        pubnub.addListener({
-            message: (event) => {
-                // A. Availability Heartbeats
-                if (event.channel === CHANNELS.MONITOR) {
-                    const id = event.message.id;
-                    if (deviceRegistry[id]) {
-                        deviceRegistry[id].lastSeen = Date.now();
-                        renderGrid();
-                    }
-                }
-
-                // B. Central Logs (Live Stream)
-                if (event.channel === CHANNELS.LOGS) {
-                    const msg = event.message;
-                    const filename = getLogTab(msg.source);
-
-                    // Add new message to registry
-                    logRegistry[filename].push({
-                        ts: new Date().toLocaleTimeString(),
-                        msg: msg.log
-                    });
-
-                    // Only re-render if looking at this tab
-                    if (activeTab === filename) {
-                        renderConsole();
-                    }
-                }
-            }
-        });
-
-        pubnub.subscribe({ channels: [CHANNELS.MONITOR, CHANNELS.LOGS] });
-
         // --- 4. RENDERERS ---
         function renderGrid() {
             const grid = document.getElementById('grid');
@@ -281,14 +348,6 @@
                 `;
             });
         }
-
-        initAvailability();
-
-        // Auto-Discovery: Check for common log files on load (Optional but helpful)
-        // Add filenames here that should ALWAYS appear
-        ["monitor.py.log", "message_cleanup.log"].forEach(f => getLogTab(f));
-
-        setInterval(renderGrid, 2000);
 
     </script>
 </body>
