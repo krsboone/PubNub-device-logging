@@ -56,7 +56,7 @@ https://youtu.be/oEfwoKn3-Jw
 
 
 ## Todo
-1. Create "browser logging" version of this demo
+1. ~~Create "browser logging" version of this demo~~
 2. Give broader consideration to dashboard security
 3. Ability to toggle on/off the device availability mornitoring section of the dashboard
 4. ~~Strict userIDs vs randomly generated~~
