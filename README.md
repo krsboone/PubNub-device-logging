@@ -6,7 +6,7 @@ Captures and ships logs from device, then collects on centralized logging system
 
 `log_cap.py`
 * Used by services / apps to write logs locally
-* Not required is other mechanisms are used to rwite logs
+* Not required if other mechanisms are used to write logs
 * Logs are created in `log/` dir
 * Log files created with naming convention of `{$processname}.log`
 * The following code will need to be added to any python apps
